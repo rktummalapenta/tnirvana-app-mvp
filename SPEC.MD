@@ -9,6 +9,7 @@ MVP must support:
 - Instagram carousel workflow with rendered image preview.
 - HITL review with actions: `approve`, `reject`, `edit`, `add_context`.
 - Pre-final rendering for reports/carousels before publish.
+- Tauri macOS desktop app as a first-class MVP client.
 
 ## 2. Product Behavior
 ### 2.1 Track-first UX
@@ -39,12 +40,32 @@ Execution:
 - `tools-runtime`: Perplexity/search/fetch/extract/render/publish tools.
 - `storage`: DynamoDB metadata + S3 artifacts.
 
+### 3.1 Tauri App Requirements (MVP)
+- Platform: macOS (Apple Silicon + Intel).
+- Stack: Tauri + React UI.
+- Required screens:
+  - Track tabs and project list.
+  - Run detail with step status.
+  - Preview viewer (HTML/PDF/image carousel).
+  - HITL queue with actions `approve/reject/edit/add_context`.
+- Security:
+  - Store session credentials/tokens in macOS Keychain.
+  - No direct AWS/S3 credentials in client.
+  - Artifact access only through API-provided pre-signed URLs.
+- Data behavior:
+  - Read/write only via App Server APIs.
+  - Live status via `/v1/runs/{run_id}/events` with `/status` polling fallback.
+  - Local cache for recent run list, preview metadata, and draft review comments.
+- Packaging:
+  - Signed macOS app bundle and versioned update channel.
+
 ## 4. Data Contracts
 ## 4.1 DynamoDB tables
 - `TrackCatalog(track_type)`
 - `Projects(track_type, project_id)`
 - `ScoutProfiles(project_id, profile_id=primary)`
 - `Runs(project_id, started_at#run_id)`
+- `RunEvents(run_id, event_at#seq)` (for live status/event stream)
 - `Artifacts(run_id, artifact_id)`
 - `ReviewTasks(status_bucket, created_at#task_id)`
 - `TimelineIndex(project_id, summary_at)`
@@ -56,11 +77,19 @@ Execution:
 - `ChangeSummary`: new/changed/faded insights vs prior run.
 - `ArtifactManifest`: canonical list of run artifacts and checksums.
 
+Run status fields (in `Runs`):
+- `status`, `state`, `current_step`, `completed_steps`, `total_steps`, `progress_pct`, `last_heartbeat_at`, `eta_seconds`.
+
 ## 5. Artifact and Preview Model
 Artifact layers:
 - S3 file (content)
 - DynamoDB artifact row (index)
 - manifest JSON (inventory)
+
+Credential boundary:
+- Client never gets S3 credentials.
+- Backend services access S3 via IAM role.
+- Client reads artifacts using API-issued pre-signed URLs.
 
 Required Scout artifacts:
 - `input/seed_question.json`
@@ -85,12 +114,18 @@ Instagram required preview artifacts:
 - `POST /v1/projects/{project_id}/runs`
 - `GET /v1/projects/{project_id}/runs`
 - `GET /v1/runs/{run_id}`
+- `GET /v1/runs/{run_id}/status`
+- `GET /v1/runs/{run_id}/events` (SSE)
 - `GET /v1/runs/{run_id}/preview`
 - `POST /v1/runs/{run_id}/resume`
 - `POST /v1/runs/{run_id}/cancel`
 - `GET /v1/runs/{run_id}/artifacts`
 - `GET /v1/review-tasks?status=pending`
 - `POST /v1/review-tasks/{task_id}/decision`
+
+Artifact API behavior:
+- Artifact/preview endpoints return metadata plus pre-signed URLs for read access.
+- Client never calls S3 with long-lived credentials.
 
 Review decision payload (MVP):
 ```json
@@ -108,6 +143,16 @@ Review decision payload (MVP):
 - Idempotent retries with bounded attempts and backoff.
 - Resume from checkpoint and/or `resume_from_step` after HITL.
 - `add_context` persists context and injects into subsequent prompts.
+- Emit run events on step transitions and periodic heartbeat updates.
+
+## 7.1 Job Status Requirements
+- Status API must return:
+  - `status`, `state`, `current_step`, `progress_pct`, `last_heartbeat_at`, `eta_seconds`.
+- Event stream must emit:
+  - `run.started`, `step.started`, `step.completed`, `step.failed`, `run.waiting_for_review`, `run.completed`.
+- UI behavior:
+  - Run detail subscribes to SSE when available.
+  - Poll `/status` every 5-10 seconds as fallback.
 
 ## 8. Tools Runtime Requirements
 Required tools:
@@ -139,6 +184,7 @@ Tool contract:
 - Observability: structured logs, traces, token/cost metrics.
 - Security: Secrets Manager for API keys; SSE-KMS on S3; DynamoDB encryption.
 - Reliability: retry policies, dead-letter failure state.
+- Desktop quality: Tauri app launch under 3s on warm start, stable preview rendering for HTML/PDF/PNG.
 
 ## 11. Acceptance Criteria
 - Scout run from one natural-language question produces multi-angle queries, insights, change summary, timeline update, and preview artifacts.
@@ -146,3 +192,5 @@ Tool contract:
 - Instagram workflow renders carousel preview images before publish.
 - HITL `add_context` action can alter subsequent run output without losing previous artifacts.
 - All produced artifacts discoverable via `/v1/runs/{run_id}/artifacts` and `/v1/runs/{run_id}/preview`.
+- Tauri app can complete end-to-end flow: create/select project, start run, view preview, submit HITL action, and resume run.
+- User can observe live run status/progress in UI via `/status` and `/events`.

@@ -25,11 +25,13 @@ Deliverables:
 - DynamoDB repositories for all MVP tables.
 - S3 artifact writer + manifest writer.
 - FastAPI endpoints for tracks/projects/runs/artifacts/review tasks.
+- API-managed pre-signed URL flow for artifact access (no client S3 credentials).
 
 Tasks:
 - Implement idempotency key support on mutating endpoints.
 - Implement run metadata storage and query APIs.
 - Implement review task creation/update including `additional_context`.
+- Implement `GET /v1/runs/{run_id}/status`.
 
 Exit criteria:
 - Can create project, create run record, and store/list artifacts.
@@ -59,11 +61,13 @@ Deliverables:
 - `intelligence_scout.yaml` execution end-to-end.
 - Multi-angle question generation + gap query loop.
 - Prior-run comparison and `TimelineIndex` updates.
+- Run event stream foundation (`RunEvents` + emitter hooks).
 
 Tasks:
 - Implement reducers: dedupe/rank insights, compute change summary.
 - Implement timeline summarizer.
 - Add run checkpointing and resume logic.
+- Emit step transition and heartbeat events for live status.
 
 Exit criteria:
 - One Scout run generates report + change summary + timeline entries.
@@ -75,6 +79,7 @@ Goal:
 Deliverables:
 - Tools: `render_report_preview`, `render_carousel_images`.
 - API: `GET /v1/runs/{run_id}/preview`.
+- API: `GET /v1/runs/{run_id}/events` (SSE).
 - HITL actions: `approve`, `reject`, `edit`, `add_context`.
 
 Tasks:
@@ -92,13 +97,14 @@ Goal:
 
 Deliverables:
 - `deep_research.yaml`, `longform_article.yaml`, `instagram_carousel.yaml`.
-- Tauri review queue + preview viewer UX polish.
+- Tauri review queue + preview viewer + live run-status UX polish.
 - Export/publish integration via `publish_artifacts`.
 
 Tasks:
 - Implement deep research source matrix.
 - Implement longform article flow for Forbes/Medium output modes.
 - Implement Instagram carousel generation and preview approval.
+- Implement UI status timeline (SSE with polling fallback).
 
 Exit criteria:
 - All three tracks can run to HITL preview and publish successfully.
@@ -114,3 +120,4 @@ MVP is complete when:
 - Scout run from natural-language question executes end-to-end with Sonar Pro retrieval, timeline comparison, and preview before publish.
 - HITL supports `add_context` and successful resume.
 - Deep Research and Instagram workflows generate previewable outputs and publish artifacts.
+- Users can observe live job running status in the app without direct S3 credentials.

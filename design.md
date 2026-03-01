@@ -137,7 +137,7 @@ Responsibilities:
 - Scout-specific question profile APIs (natural-language question + generated question set).
 - Run creation/query/cancel/resume.
 - Preview retrieval APIs for staged render output.
-- Artifact metadata lookup and signed URL issuance.
+- Artifact metadata lookup and pre-signed URL issuance (read/write mediated by API).
 - ReviewTask queue and decisions, including additional-context injection from reviewer.
 
 Minimal REST endpoints:
@@ -150,12 +150,18 @@ Minimal REST endpoints:
 - `POST /v1/projects/{project_id}/runs`
 - `GET /v1/projects/{project_id}/runs`
 - `GET /v1/runs/{run_id}`
+- `GET /v1/runs/{run_id}/status`
+- `GET /v1/runs/{run_id}/events` (SSE)
 - `GET /v1/runs/{run_id}/preview`
 - `POST /v1/runs/{run_id}/resume`
 - `POST /v1/runs/{run_id}/cancel`
 - `GET /v1/runs/{run_id}/artifacts`
 - `GET /v1/review-tasks?status=pending`
 - `POST /v1/review-tasks/{task_id}/decision`
+
+Artifact access note:
+- `/v1/runs/{run_id}/artifacts` and `/v1/runs/{run_id}/preview` return metadata plus API-generated pre-signed URLs.
+- UI downloads previews/artifacts with those URLs; no client S3 credential flow.
 
 ### 4.3 Workflow Orchestrator
 Responsibilities:
@@ -195,6 +201,10 @@ Initial tools:
 ### 4.6 Storage Layer
 - DynamoDB for metadata, run state, indexing, review queue.
 - S3 for artifact blobs and manifests.
+- Credential boundary:
+  - UI/Tauri never receives AWS S3 credentials.
+  - Only backend services use IAM roles for S3 access.
+  - Client fetches artifacts through API-managed pre-signed URLs.
 
 ### Error handling and idempotency
 - Client-request idempotency: `Idempotency-Key` header on mutating APIs.
@@ -230,10 +240,16 @@ Initial tools:
 #### Runs
 - PK: `project_id`
 - SK: `started_at#run_id`
-- Attributes: `track_type`, `workflow_id`, `status`, `state`, `started_at`, `ended_at`, `current_step`, `budget_usage`, `input_hash`
+- Attributes: `track_type`, `workflow_id`, `status`, `state`, `started_at`, `ended_at`, `current_step`, `completed_steps`, `total_steps`, `progress_pct`, `last_heartbeat_at`, `eta_seconds`, `budget_usage`, `input_hash`
 - GSI1: `run_id` (partition), `started_at` (sort) for direct run lookup
 - GSI2: `track_type` (partition), `started_at` (sort) for track-level operations
 - GSI3: `status` (partition), `started_at` (sort) for operations dashboard
+
+#### RunEvents
+- PK: `run_id`
+- SK: `event_at#seq`
+- Attributes: `event_type`, `step_id`, `status`, `message`, `progress_pct`, `payload_ref`, `created_at`
+- TTL: optional (for example 14 days) if long-term history is not required
 
 #### ScoutProfiles
 - PK: `project_id`
@@ -264,6 +280,8 @@ Initial tools:
 - List project runs ordered by time: `Runs(project_id, started_at#run_id*)`.
 - Fetch artifacts for run: `Artifacts(run_id, artifact_id*)`.
 - Fetch preview artifacts for run: `Artifacts(run_id, artifact_id*)` filtered by `stage='preview'`.
+- Fetch current run status card: `Runs.GSI1(run_id)` returning step/progress/heartbeat.
+- Stream live run updates: `RunEvents(run_id, event_at#seq*)` (backing `/events` SSE).
 - Fetch pending review tasks: `ReviewTasks(PENDING#yyyy-mm-dd, created_at#task_id*)`.
 - Build trendline: `TimelineIndex(project_id, summary_at between t1..t2)`.
 - Fetch Scout profile for project: `ScoutProfiles(project_id, primary)`.
@@ -733,6 +751,8 @@ Failure paths:
 ### 7.2 Checkpoints and resumability
 - Persist checkpoint after each step with:
   - `run_id`, `step_id`, `step_input_ref`, `step_output_ref`, `status`, `attempt_count`.
+- Persist live status after each state transition with:
+  - `current_step`, `completed_steps`, `total_steps`, `progress_pct`, `last_heartbeat_at`.
 - Resume algorithm:
   - Load latest successful checkpoint.
   - Skip completed idempotent steps.
@@ -748,6 +768,14 @@ Failure paths:
   - `add_context`: attach reviewer context/instructions and resume from configured step (for example `generate_questions` or `synthesize_scout_report`).
 - UI Review Queue consumes pending tasks and calls `/review-tasks/{task_id}/decision`.
 - App Server posts resume signal to orchestrator with `resume_token` and optional `additional_context`.
+
+### 7.4 Live Job Status
+- Status API (`GET /v1/runs/{run_id}/status`) returns:
+  - `status`, `state`, `current_step`, `progress_pct`, `last_heartbeat_at`, `eta_seconds`.
+- Event stream (`GET /v1/runs/{run_id}/events`) pushes step-level transitions and log-safe progress messages via SSE.
+- UI behavior:
+  - Runs page polls status every 5-10 seconds as fallback.
+  - Run detail view subscribes to SSE for near real-time updates.
 
 ## 8. LLM Gateway Details
 
@@ -862,6 +890,9 @@ Execution envelope:
 - React UI runs inside Tauri WebView; Tauri Rust layer handles secure native integrations.
 - Credentials (session tokens, optional encrypted API tokens) stored in macOS Keychain.
 - App communicates only with App Server APIs; no direct DynamoDB/S3 credentials in client.
+- Live job status:
+  - use `/v1/runs/{run_id}/events` (SSE) for real-time progress
+  - fallback polling via `/v1/runs/{run_id}/status`
 - Local cache:
   - recent runs, review drafts, and artifact metadata in local sqlite/file cache.
 - Offline behavior (optional MVP+):
@@ -976,6 +1007,7 @@ Deliverables:
 - Deep research report includes verifiable source mapping.
 - Publishing workflows produce expected artifacts (outline/draft or carousel/caption).
 - Run observability includes token/cost metrics and traceable step logs.
+- User can see live run status and progress in UI during job execution.
 
 ## 14. Appendix
 
@@ -990,6 +1022,8 @@ GET    /v1/projects/{project_id}/scout-profile
 POST   /v1/projects/{project_id}/runs
 GET    /v1/projects/{project_id}/runs
 GET    /v1/runs/{run_id}
+GET    /v1/runs/{run_id}/status
+GET    /v1/runs/{run_id}/events
 GET    /v1/runs/{run_id}/preview
 POST   /v1/runs/{run_id}/resume
 POST   /v1/runs/{run_id}/cancel
